@@ -1,0 +1,7 @@
+{
+    "lp_contract": "CurveTokenV2",
+    "coins": [
+        {"decimals": 18, "tethered": false, "wrapped": false, "eth": true},
+        {"decimals": 18, "tethered": false, "wrapped": false}
+    ]
+}
