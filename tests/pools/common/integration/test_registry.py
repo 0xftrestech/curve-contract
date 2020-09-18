@@ -6,6 +6,7 @@ https://github.com/curvefi/curve-pool-registry
 import pytest
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 
 pytestmark = pytest.mark.usefixtures("add_initial_liquidity")
 
@@ -33,13 +34,25 @@ def test_exchange(bob, registry, wrapped_coins, wrapped_decimals, swap, send, re
     recv_token = wrapped_coins[recv]
 
     amount = 10**wrapped_decimals[send]
-    send_token._mint_for_testing(bob, amount, {'from': bob})
-    send_token.approve(registry, amount, {'from': bob})
-    expected = registry.get_exchange_amount(swap, send_token, recv_token, amount)
+    if send_token == ETH_ADDRESS:
+        value = 10**18
+    else:
+        send_token._mint_for_testing(bob, amount, {'from': bob})
+        send_token.approve(registry, amount, {'from': bob})
+        value = 0
 
-    registry.exchange(swap, send_token, recv_token, amount, 0, {'from': bob})
-    assert send_token.balanceOf(bob) == 0
-    assert recv_token.balanceOf(bob) / expected == pytest.approx(1)
+    expected = registry.get_exchange_amount(swap, send_token, recv_token, amount)
+    registry.exchange(swap, send_token, recv_token, amount, 0, {'from': bob, 'value': value})
+
+    if send_token == ETH_ADDRESS:
+        assert bob.balance() == "999999 ether"
+    else:
+        assert send_token.balanceOf(bob) == 0
+
+    if recv_token == ETH_ADDRESS:
+        assert (bob.balance() - "1000000 ether") / expected == pytest.approx(1)
+    else:
+        assert recv_token.balanceOf(bob) / expected == pytest.approx(1)
 
 
 @pytest.mark.lending

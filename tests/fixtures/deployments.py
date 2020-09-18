@@ -93,15 +93,17 @@ def wrapped_coins(MintableTestToken, project, alice, pool_data, underlying_coins
 def underlying_coins(MintableTestToken, ERC20Mock, ERC20MockNoReturn, alice, pool_data, is_forked):
     coins = []
 
-    if is_forked:
-        for data in pool_data['coins']:
-            coins.append(MintableTestToken(data['underlying_address']))
-    else:
-        for i, coin_data in enumerate(pool_data['coins']):
-            decimals = coin_data['decimals']
-            deployer = ERC20MockNoReturn if coin_data['tethered'] else ERC20Mock
-            contract = deployer.deploy(f"Underlying Coin {i}", f"UC{i}", decimals, {'from': alice})
-            coins.append(contract)
+    for i, coin_data in enumerate(pool_data['coins']):
+        if coin_data.get("eth"):
+            coins.append("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
+            continue
+        if is_forked:
+            coins.append(MintableTestToken(coin_data['underlying_address']))
+            continue
+        decimals = coin_data['decimals']
+        deployer = ERC20MockNoReturn if coin_data['tethered'] else ERC20Mock
+        contract = deployer.deploy(f"Underlying Coin {i}", f"UC{i}", decimals, {'from': alice})
+        coins.append(contract)
 
     yield coins
 
