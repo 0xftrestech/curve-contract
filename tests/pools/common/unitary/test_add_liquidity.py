@@ -76,3 +76,11 @@ def test_min_amount_with_slippage(bob, swap, wrapped_decimals, wrapped_coins, n_
 
     with brownie.reverts("Slippage screwed you"):
         swap.add_liquidity(amounts, n_coins * 10**18, {'from': bob, 'value': value})
+
+
+def test_wrong_eth_amount(bob, swap, wrapped_coins, pool_token, initial_amounts, n_coins):
+    # for ETH pools, tests sending too much ETH
+    # for non-ETH pools, tests that function is nonpayable
+    value = initial_amounts[0] - 1 if ETH_ADDRESS in wrapped_coins else 1
+    with brownie.reverts():
+        swap.add_liquidity(initial_amounts, 0, {'from': bob, 'value': value})

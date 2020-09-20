@@ -152,17 +152,20 @@ def pytest_collection_modifyitems(config, items):
         for marker in item.iter_markers(name="skip_pool"):
             if params["pool_data"] in marker.args:
                 items.remove(item)
+                break
 
         # apply `target_pool` marker
         for marker in item.iter_markers(name="target_pool"):
             if params["pool_data"] not in marker.args:
                 items.remove(item)
+                break
 
         # apply `lending` marker
         for marker in item.iter_markers(name="lending"):
             deployer = getattr(project, data['swap_contract'])
             if "exchange_underlying" not in deployer.signatures:
                 items.remove(item)
+                break
 
         # apply `lending` marker
         for marker in item.iter_markers(name="zap"):
