@@ -2,7 +2,7 @@ import brownie
 import pytest
 
 pytestmark = pytest.mark.skip_pool(
-    "busd", "compound", "snow", "susd", "usdt", "y", "template-base", "template-y"
+    "busd", "compound", "eth", "snow", "susd", "usdt", "y", "template-base", "template-y"
 )
 
 MIN_RAMP_TIME = 86400
