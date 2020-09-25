@@ -483,21 +483,6 @@ def get_dy(i: int128, j: int128, dx: uint256) -> uint256:
     return (dy - _fee) * PRECISION / rates[j]
 
 
-@view
-@external
-def get_dy_underlying(i: int128, j: int128, dx: uint256) -> uint256:
-    # dx and dy in underlying units
-    rates: uint256[N_COINS] = self._get_stored_rates()
-    xp: uint256[N_COINS] = self._xp(rates)
-    precisions: uint256[N_COINS] = PRECISION_MUL
-
-    x: uint256 = xp[i] + dx * precisions[i]
-    y: uint256 = self.get_y(i, j, x, xp)
-    dy: uint256 = xp[j] - y - 1
-    _fee: uint256 = self.fee * dy / FEE_DENOMINATOR
-    return (dy - _fee) / precisions[j]
-
-
 @external
 @nonreentrant('lock')
 def exchange(i: int128, j: int128, dx: uint256, min_dy: uint256):
