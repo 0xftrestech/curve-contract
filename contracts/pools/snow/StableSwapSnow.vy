@@ -262,6 +262,11 @@ def get_coin_rates() -> uint256[N_COINS]:
     return _coin_rates
 
 
+@external
+def update_coin_rates():
+    self._update_stored_rates()
+
+
 @view
 @internal
 def _xp(rates: uint256[N_COINS]) -> uint256[N_COINS]:
