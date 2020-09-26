@@ -132,10 +132,16 @@ is_killed: bool
 kill_deadline: uint256
 KILL_DEADLINE_DT: constant(uint256) = 2 * 30 * 86400
 
-coin_rates: uint256[N_COINS]
+coin_rates: uint256[2]
 coin_rates_update: uint256
 y_pool: address
-CACHE_TIME: constant(uint256) = 10 * 60
+
+HARD_UPDATE: constant(uint256) = 60 * 30
+SOFT_UPDATE: constant(uint256) = 60 * 10
+
+struct CoinRates:
+    rates: uint256[N_COINS]
+    times: uint256[5]
 
 
 @external
@@ -184,9 +190,6 @@ def __init__(
     self.kill_deadline = block.timestamp + KILL_DEADLINE_DT
     self.lp_token = _pool_token
 
-    # USDC price is always 1e18
-    self.coin_rates[5] = PRECISION_MUL[5] * 10 ** 18
-
 
 @view
 @internal
@@ -224,27 +227,67 @@ def A_precise() -> uint256:
 
 @view
 @internal
-def _get_stored_rates(_force: bool = False) -> uint256[N_COINS]:
-    if not _force and self.coin_rates_update + CACHE_TIME > block.timestamp:
-        return self.coin_rates
-
+def _get_stored_rates(_force: bool = False) -> CoinRates:
     precision_mul: uint256[N_COINS] = PRECISION_MUL
-    _coin_rates: uint256[N_COINS] = empty(uint256[N_COINS])
-    _coin_rates[5] = precision_mul[5] * 10 ** 18
-    for i in range(5):
-        _coin_rates[i] = precision_mul[i] * yERC20(self.coins[i]).getPricePerFullShare()
 
-    # ycyCRV is a special case - it tracks against the price of yCRV, not USD
-    _coin_rates[4] = _coin_rates[4] * CurvePool(self.y_pool).get_virtual_price() / LENDING_PRECISION
+    # cached rates that are older than this value will be updated
+    _update_time_threshold: uint256 = block.timestamp - SOFT_UPDATE
+
+    _times_packed: uint256 = self.coin_rates_update
+    _rates_packed: uint256[2] = self.coin_rates
+    _coin_rates: CoinRates = empty(CoinRates)
+
+    if not _force:
+        # iterate to unpack the rates and times, and determine which rates require updating
+        for i in range(5):
+            _update_time: uint256 = shift(_times_packed, 51 * i) % 2 ** 51
+
+            # if cache time is earlier than the hard update limit, we ignore it for
+            # now - leaving `_coin_rates.times[i]` as 0 means it will be updated
+            if _update_time + HARD_UPDATE > block.timestamp:
+                if _update_time < _update_time_threshold:
+
+                    # if rate was updated earlier than current threshold, reduce the threshold
+                    _update_time_threshold = _update_time
+
+                # store the unpacked rate and time
+                _coin_rates.rates[i] = shift(_rates_packed[i / 3], (83 * (i % 3))) % 2 ** 83
+                _coin_rates.times[i] = _update_time
+
+    for i in range(5):
+        # iterate to update the rates as needed
+        rate: uint256 = _coin_rates.rates[i]
+        if _coin_rates.times[i] <= _update_time_threshold:
+            rate = yERC20(self.coins[i]).getPricePerFullShare()
+            _coin_rates.times[i] = block.timestamp
+            if i == 4:
+                # yvyCRV is a special case - it tracks against the price of yCRV, not USD
+                rate = rate * CurvePool(self.y_pool).get_virtual_price() / LENDING_PRECISION
+        _coin_rates.rates[i] = rate * precision_mul[i]
+
+    # the final rate is for USDC, so we can hardcode it
+    _coin_rates.rates[5] = PRECISION_MUL[5] * 10 ** 18
 
     return _coin_rates
 
 
 @internal
-def _update_stored_rates():
-    if self.coin_rates_update + CACHE_TIME < block.timestamp:
-        self.coin_rates = self._get_stored_rates(True)
-        self.coin_rates_update = block.timestamp
+def _update_stored_rates(_force: bool = False) -> uint256[N_COINS]:
+    # query the stored rates and update times
+    _coin_rates: CoinRates = self._get_stored_rates(_force)
+
+    if block.timestamp in _coin_rates.times:
+        # if any rates were updated in this block, pack the data and write it to storage
+        precision_mul: uint256[N_COINS] = PRECISION_MUL
+        _times_packed: uint256 = 0
+        _rates_packed: uint256[2] = empty(uint256[2])
+        for i in range(5):
+            _times_packed += shift(_coin_rates.times[i], 51 * -i)
+            _rates_packed[i / 3] += shift((_coin_rates.rates[i] / precision_mul[i]), 83 * -i)
+        self.coin_rates_update = _times_packed
+        self.coin_rates = _rates_packed
+
+    return _coin_rates.rates
 
 
 @view
@@ -255,7 +298,7 @@ def get_coin_rates() -> uint256[N_COINS]:
     @dev Values are normalized to 1e18 precision
     @return Array of coin rates
     """
-    _coin_rates: uint256[N_COINS] = self._get_stored_rates()
+    _coin_rates: uint256[N_COINS] = self._get_stored_rates().rates
     _precision_mul: uint256[N_COINS] = PRECISION_MUL
     for i in range(N_COINS):
         _coin_rates[i] /= _precision_mul[i]
@@ -264,7 +307,7 @@ def get_coin_rates() -> uint256[N_COINS]:
 
 @external
 def update_coin_rates():
-    self._update_stored_rates()
+    self._update_stored_rates(True)
 
 
 @view
@@ -326,11 +369,10 @@ def get_virtual_price() -> uint256:
     Returns portfolio virtual price (for calculating profit)
     scaled up by 1e18
     """
-    D: uint256 = self.get_D(self._xp(self._get_stored_rates()), self._A())
+    D: uint256 = self.get_D(self._xp(self._get_stored_rates().rates), self._A())
     # D is in the units similar to DAI (e.g. converted to precision 1e18)
     # When balanced, D = n * x_u - total virtual value of the portfolio
-    token_supply: uint256 = ERC20(self.lp_token).totalSupply()
-    return D * PRECISION / token_supply
+    return D * PRECISION / ERC20(self.lp_token).totalSupply()
 
 
 @view
@@ -343,13 +385,14 @@ def calc_token_amount(amounts: uint256[N_COINS], deposit: bool) -> uint256:
     Needed to prevent front-running, not for precise calculations!
     """
     _balances: uint256[N_COINS] = self.balances
-    rates: uint256[N_COINS] = self._get_stored_rates()
+    rates: uint256[N_COINS] = self._get_stored_rates().rates
     D0: uint256 = self.get_D_mem(rates, _balances)
     for i in range(N_COINS):
+        _amount: uint256 = amounts[i]
         if deposit:
-            _balances[i] += amounts[i]
+            _balances[i] += _amount
         else:
-            _balances[i] -= amounts[i]
+            _balances[i] -= _amount
     D1: uint256 = self.get_D_mem(rates, _balances)
     token_amount: uint256 = ERC20(self.lp_token).totalSupply()
     diff: uint256 = 0
@@ -371,8 +414,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
     _lp_token: address = self.lp_token
 
     token_supply: uint256 = ERC20(_lp_token).totalSupply()
-    self._update_stored_rates()
-    rates: uint256[N_COINS] = self.coin_rates
+    rates: uint256[N_COINS] = self._update_stored_rates()
     # Initial invariant
     D0: uint256 = 0
     old_balances: uint256[N_COINS] = self.balances
@@ -418,7 +460,7 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
     # Take coins from the sender
     for i in range(N_COINS):
         if amounts[i] != 0:
-            assert ERC20(self.coins[i]).transferFrom(msg.sender, self, amounts[i])
+            ERC20(self.coins[i]).transferFrom(msg.sender, self, amounts[i])
 
     # Mint pool tokens
     CurveToken(_lp_token).mint(msg.sender, mint_amount)
@@ -475,7 +517,7 @@ def get_y(i: int128, j: int128, x: uint256, xp_: uint256[N_COINS]) -> uint256:
 @view
 @external
 def get_dy(i: int128, j: int128, dx: uint256) -> uint256:
-    rates: uint256[N_COINS] = self._get_stored_rates()
+    rates: uint256[N_COINS] = self._get_stored_rates().rates
     xp: uint256[N_COINS] = self._xp(rates)
 
     x: uint256 = xp[i] + dx * rates[i] / PRECISION
@@ -490,8 +532,7 @@ def get_dy(i: int128, j: int128, dx: uint256) -> uint256:
 def exchange(i: int128, j: int128, dx: uint256, min_dy: uint256):
     assert not self.is_killed
 
-    self._update_stored_rates()
-    rates: uint256[N_COINS] = self.coin_rates
+    rates: uint256[N_COINS] = self._update_stored_rates()
 
     xp: uint256[N_COINS] = self._xp(rates)
 
@@ -508,8 +549,8 @@ def exchange(i: int128, j: int128, dx: uint256, min_dy: uint256):
 
     assert dy >= min_dy, "Exchange resulted in fewer coins than expected"
 
-    assert ERC20(self.coins[i]).transferFrom(msg.sender, self, dx)
-    assert ERC20(self.coins[j]).transfer(msg.sender, dy)
+    ERC20(self.coins[i]).transferFrom(msg.sender, self, dx)
+    ERC20(self.coins[j]).transfer(msg.sender, dy)
 
     log TokenExchange(msg.sender, i, dx, j, dy)
 
@@ -527,7 +568,7 @@ def remove_liquidity(_amount: uint256, min_amounts: uint256[N_COINS]):
         assert value >= min_amounts[i], "Withdrawal resulted in fewer coins than expected"
         self.balances[i] = _balance - value
         amounts[i] = value
-        assert ERC20(self.coins[i]).transfer(msg.sender, value)
+        ERC20(self.coins[i]).transfer(msg.sender, value)
 
     CurveToken(self.lp_token).burnFrom(msg.sender, _amount)  # Will raise if not enough
 
@@ -545,8 +586,8 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
     _admin_fee: uint256 = self.admin_fee
 
-    self._update_stored_rates()
-    rates: uint256[N_COINS] = self.coin_rates
+    rates: uint256[N_COINS] = self._update_stored_rates()
+
 
     old_balances: uint256[N_COINS] = self.balances
     new_balances: uint256[N_COINS] = old_balances
@@ -571,7 +612,7 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     CurveToken(_lp_token).burnFrom(msg.sender, token_amount)  # dev: insufficient funds
     for i in range(N_COINS):
         if amounts[i] != 0:
-            assert ERC20(self.coins[i]).transfer(msg.sender, amounts[i])
+            ERC20(self.coins[i]).transfer(msg.sender, amounts[i])
 
     log RemoveLiquidityImbalance(msg.sender, amounts, fees, D1, token_supply - token_amount)
 
@@ -624,13 +665,12 @@ def get_y_D(A_: uint256, i: int128, xp: uint256[N_COINS], D: uint256) -> uint256
 
 @view
 @internal
-def _calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> (uint256, uint256):
+def _calc_withdraw_one_coin(_token_amount: uint256, i: int128, rates: uint256[N_COINS]) -> (uint256, uint256):
     # First, need to calculate
     # * Get current D
     # * Solve Eqn against y_i for D - _token_amount
     amp: uint256 = self._A()
     _fee: uint256 = self.fee * N_COINS / (4 * (N_COINS - 1))
-    rates: uint256[N_COINS] = self._get_stored_rates()
     total_supply: uint256 = ERC20(self.lp_token).totalSupply()
 
     xp: uint256[N_COINS] = self._xp(rates)
@@ -660,7 +700,11 @@ def _calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> (uint256, uint
 @view
 @external
 def calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256:
-    return self._calc_withdraw_one_coin(_token_amount, i)[0]
+    return self._calc_withdraw_one_coin(
+        _token_amount,
+        i,
+        self._get_stored_rates().rates,
+    )[0]
 
 
 @external
@@ -671,15 +715,15 @@ def remove_liquidity_one_coin(_token_amount: uint256, i: int128, min_amount: uin
     """
     assert not self.is_killed  # dev: is killed
 
-    self._update_stored_rates()
+    rates: uint256[N_COINS] = self._update_stored_rates()
     dy: uint256 = 0
     dy_fee: uint256 = 0
-    dy, dy_fee = self._calc_withdraw_one_coin(_token_amount, i)
+    dy, dy_fee = self._calc_withdraw_one_coin(_token_amount, i, rates)
     assert dy >= min_amount, "Not enough coins removed"
 
     self.balances[i] -= (dy + dy_fee * self.admin_fee / FEE_DENOMINATOR)
     CurveToken(self.lp_token).burnFrom(msg.sender, _token_amount)  # dev: insufficient funds
-    assert ERC20(self.coins[i]).transfer(msg.sender, dy)
+    ERC20(self.coins[i]).transfer(msg.sender, dy)
 
     log RemoveLiquidityOne(msg.sender, _token_amount, dy)
 
@@ -805,7 +849,7 @@ def withdraw_admin_fees():
         c: address = self.coins[i]
         value: uint256 = ERC20(c).balanceOf(self) - self.balances[i]
         if value > 0:
-            assert ERC20(c).transfer(msg.sender, value)
+            ERC20(c).transfer(msg.sender, value)
 
 
 @external
