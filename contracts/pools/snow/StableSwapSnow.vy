@@ -397,14 +397,11 @@ def add_liquidity(amounts: uint256[N_COINS], min_mint_amount: uint256):
         # Only account for fees if we are not the first to deposit
         for i in range(N_COINS):
             ideal_balance: uint256 = D1 * old_balances[i] / D0
-            difference: uint256 = 0
-            if ideal_balance > new_balances[i]:
-                difference = ideal_balance - new_balances[i]
-            else:
-                difference = new_balances[i] - ideal_balance
+            new_balance: uint256 = new_balances[i]
+            difference: uint256 = max(ideal_balance, new_balance) - min(ideal_balance, new_balance)
             fees[i] = _fee * difference / FEE_DENOMINATOR
-            self.balances[i] = new_balances[i] - (fees[i] * _admin_fee / FEE_DENOMINATOR)
-            new_balances[i] -= fees[i]
+            self.balances[i] = new_balance - (fees[i] * _admin_fee / FEE_DENOMINATOR)
+            new_balances[i] = new_balance - fees[i]
         D2 = self.get_D_mem(rates, new_balances)
     else:
         self.balances = new_balances
@@ -560,14 +557,11 @@ def remove_liquidity_imbalance(amounts: uint256[N_COINS], max_burn_amount: uint2
     fees: uint256[N_COINS] = empty(uint256[N_COINS])
     for i in range(N_COINS):
         ideal_balance: uint256 = D1 * old_balances[i] / D0
-        difference: uint256 = 0
-        if ideal_balance > new_balances[i]:
-            difference = ideal_balance - new_balances[i]
-        else:
-            difference = new_balances[i] - ideal_balance
+        new_balance: uint256 = new_balances[i]
+        difference: uint256 = max(ideal_balance, new_balance) - min(ideal_balance, new_balance)
         fees[i] = _fee * difference / FEE_DENOMINATOR
-        self.balances[i] = new_balances[i] - (fees[i] * _admin_fee / FEE_DENOMINATOR)
-        new_balances[i] -= fees[i]
+        self.balances[i] = new_balance - (fees[i] * _admin_fee / FEE_DENOMINATOR)
+        new_balances[i] = new_balance - fees[i]
     D2: uint256 = self.get_D_mem(rates, new_balances)
 
     token_amount: uint256 = (D0 - D2) * token_supply / D0
@@ -650,10 +644,11 @@ def _calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> (uint256, uint
 
     for j in range(N_COINS):
         dx_expected: uint256 = 0
+        xp_j: uint256 = xp[j]
         if j == i:
-            dx_expected = xp[j] * D1 / D0 - new_y
+            dx_expected = xp_j * D1 / D0 - new_y
         else:
-            dx_expected = xp[j] - xp[j] * D1 / D0
+            dx_expected = xp_j - xp_j * D1 / D0
         xp_reduced[j] -= _fee * dx_expected / FEE_DENOMINATOR
 
     dy: uint256 = xp_reduced[i] - self.get_y_D(amp, i, xp_reduced, D1)
